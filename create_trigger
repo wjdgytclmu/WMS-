@@ -1,0 +1,88 @@
+-- 触发器（6 个）
+SHOW TRIGGERS;
+### 1. trg_attendance_changed（INSERT / UPDATE / DELETE 三合一）
+-- > 考勤数据变更时实时动态更新缺勤扣款和全勤奖励。
+-- > 注意 UPDATE 需同时重算新旧日期两个月份。
+-- INSERT
+DROP TRIGGER IF EXISTS trg_attendance_after_insert;
+CREATE TRIGGER trg_attendance_after_insert
+AFTER INSERT ON attendance_records FOR EACH ROW
+BEGIN
+    CALL sp_recalc_attendance_items(NEW.emp_id, DATE_FORMAT(NEW.att_date, '%Y-%m'));
+END;
+
+-- UPDATE
+DROP TRIGGER IF EXISTS trg_attendance_after_update;
+CREATE TRIGGER trg_attendance_after_update
+AFTER UPDATE ON attendance_records FOR EACH ROW
+BEGIN
+    CALL sp_recalc_attendance_items(NEW.emp_id, DATE_FORMAT(NEW.att_date, '%Y-%m'));
+    IF OLD.att_date != NEW.att_date THEN
+        CALL sp_recalc_attendance_items(OLD.emp_id, DATE_FORMAT(OLD.att_date, '%Y-%m'));
+    END IF;
+END;
+
+-- DELETE
+DROP TRIGGER IF EXISTS trg_attendance_after_delete;
+CREATE TRIGGER trg_attendance_after_delete
+AFTER DELETE ON attendance_records FOR EACH ROW
+BEGIN
+    CALL sp_recalc_attendance_items(OLD.emp_id, DATE_FORMAT(OLD.att_date, '%Y-%m'));
+END;
+
+### 2. trg_lock_paid_salary — UPDATE + DELETE 双拦截，INSERT 放行
+-- 已发放月份禁止修改/删除明细，但允许 INSERT（冲销修正追加记录）
+-- 修正流程：解锁 → INSERT 冲销项 → 重算 → 审核
+
+-- 拦截 UPDATE
+DROP TRIGGER IF EXISTS trg_lock_paid_salary_upd;
+CREATE TRIGGER trg_lock_paid_salary_upd
+BEFORE UPDATE ON monthly_salary_details FOR EACH ROW
+BEGIN
+    IF (SELECT pay_status FROM monthly_salary_summary
+        WHERE emp_id = NEW.emp_id AND salary_month = NEW.salary_month) = '已发放' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = '已发放月份的明细不可修改，请先解锁后以冲销方式修正';
+    END IF;
+END;
+
+-- 拦截 DELETE
+DROP TRIGGER IF EXISTS trg_lock_paid_salary_del;
+CREATE TRIGGER trg_lock_paid_salary_del
+BEFORE DELETE ON monthly_salary_details FOR EACH ROW
+BEGIN
+    IF (SELECT pay_status FROM monthly_salary_summary
+        WHERE emp_id = OLD.emp_id AND salary_month = OLD.salary_month) = '已发放' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = '已发放月份的明细不可删除，请先解锁后以冲销方式修正';
+    END IF;
+END;
+
+### 3. trg_emp_title_pos_history
+--当 employees 的 cur_title_id 或 cur_position_id 被 UPDATE 时，自动写入对应的履历表。
+--保证人工修改员工职称/岗位时无需额外调用履历 INSERT。
+DROP TRIGGER IF EXISTS trg_emp_title_pos_history;
+CREATE TRIGGER trg_emp_title_pos_history
+AFTER UPDATE ON employees FOR EACH ROW
+BEGIN
+    IF OLD.cur_title_id != NEW.cur_title_id THEN
+        INSERT INTO emp_title_history(emp_id, old_title_id, new_title_id, change_time)
+        VALUES (NEW.emp_id, OLD.cur_title_id, NEW.cur_title_id, NOW());
+    END IF;
+    IF OLD.cur_position_id != NEW.cur_position_id THEN
+        INSERT INTO emp_position_history(emp_id, old_pos_id, new_pos_id, change_time)
+        VALUES (NEW.emp_id, OLD.cur_position_id, NEW.cur_position_id, NOW());
+    END IF;
+END;
+
+
+
+
+
+
+
+
+
+
+
+

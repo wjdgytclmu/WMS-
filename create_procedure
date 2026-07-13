@@ -1,0 +1,323 @@
+--存储过程（9 个）
+--1. sp_init_monthly_salary(p_salary_month)发薪日凌晨 1 点定时调用。
+--逻辑：复制上月基本工资 → 写入系统计算的职称/岗位工资 → 写入考勤扣款默认值 0。
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_init_monthly_salary;
+
+CREATE PROCEDURE sp_init_monthly_salary(IN p_salary_month CHAR(7))
+BEGIN
+    DECLARE v_last_month CHAR(7);
+    DECLARE v_basic_cat INT;
+
+    SET v_last_month = DATE_FORMAT(DATE_SUB(CONCAT(p_salary_month, '-01'), INTERVAL 1 MONTH), '%Y-%m');
+    SELECT cat_id INTO v_basic_cat FROM salary_categories WHERE cat_name = '基本工资' LIMIT 1;
+
+    START TRANSACTION;
+
+    -- ① 复制上月基本工资（题目 (4)：一般和上月一样，特殊情况可手动改）
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
+    SELECT emp_id, p_salary_month, v_basic_cat, amount
+    FROM monthly_salary_details
+    WHERE salary_month = v_last_month AND cat_id = v_basic_cat;
+
+    -- ② 职称/基本工资：取发薪日前最新变更的职称（变更 ≤ 发薪日 → 当月生效，否则沿用旧职称）
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
+    SELECT e.emp_id, p_salary_month, ts.cat_id, ts.salary_amount
+    FROM employees e
+    JOIN title_salary ts ON ts.title_id = COALESCE(
+        (SELECT h.new_title_id FROM emp_title_history h
+         WHERE h.emp_id = e.emp_id
+           AND h.change_time <= CONCAT(p_salary_month, '-', LPAD(fn_pay_day(),2,'0'), ' 23:59:59')
+         ORDER BY h.change_time DESC LIMIT 1),
+        e.cur_title_id
+    )
+    WHERE e.emp_status = '在职'
+    ON DUPLICATE KEY UPDATE amount = VALUES(amount);
+
+    -- ③ 岗位工资：取发薪日前最新变更的岗位
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
+    SELECT e.emp_id, p_salary_month, ps.cat_id, ps.salary_amount
+    FROM employees e
+    JOIN position_salary ps ON ps.pos_id = COALESCE(
+        (SELECT h.new_pos_id FROM emp_position_history h
+         WHERE h.emp_id = e.emp_id
+           AND h.change_time <= CONCAT(p_salary_month, '-', LPAD(fn_pay_day(),2,'0'), ' 23:59:59')
+         ORDER BY h.change_time DESC LIMIT 1),
+        e.cur_position_id
+    )
+    WHERE e.emp_status = '在职'
+    ON DUPLICATE KEY UPDATE amount = VALUES(amount);
+
+    -- ④ 考勤相关默认 0（全勤奖励、请假扣款、旷工扣款、迟到早退扣款）
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
+    SELECT e.emp_id, p_salary_month, sc.cat_id, 0.00
+    FROM employees e
+    CROSS JOIN salary_categories sc
+    WHERE e.emp_status = '在职'
+      AND sc.cat_name IN ('全勤奖励','请假扣款','旷工扣款','迟到早退扣款')
+    ON DUPLICATE KEY UPDATE detail_id = detail_id;
+
+    COMMIT;
+END //
+
+DELIMITER ;
+
+--2. sp_calculate_payroll(p_salary_month)
+--财务点击"计算"，汇总明细到总表，状态设为"待审核"。
+--支持重复调用；已发放月份需先 sp_unlock_payroll 解锁
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_calculate_payroll;
+
+CREATE PROCEDURE sp_calculate_payroll(IN p_salary_month CHAR(7))
+BEGIN
+    START TRANSACTION;
+
+    IF EXISTS (SELECT 1 FROM monthly_salary_summary
+               WHERE salary_month = p_salary_month AND pay_status = '已发放') THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = '该月份已审核发放，请先执行 sp_unlock_payroll 解锁';
+    END IF;
+
+    DELETE FROM monthly_salary_summary WHERE salary_month = p_salary_month;
+
+    INSERT INTO monthly_salary_summary(emp_id, salary_month, total_income, total_deduct, real_salary, pay_status)
+    SELECT
+        msd.emp_id, msd.salary_month,
+        SUM(IF(sc.cat_type='应发', msd.amount, 0)),
+        ABS(SUM(IF(sc.cat_type='应扣', msd.amount, 0))),
+        SUM(IF(sc.cat_type='应发', msd.amount, 0)) - ABS(SUM(IF(sc.cat_type='应扣', msd.amount, 0))),
+        '待审核'
+    FROM monthly_salary_details msd
+    JOIN salary_categories sc ON msd.cat_id = sc.cat_id
+    WHERE msd.salary_month = p_salary_month
+      AND EXISTS (SELECT 1 FROM employees e WHERE e.emp_id = msd.emp_id AND e.emp_status = '在职')
+    GROUP BY msd.emp_id, msd.salary_month;
+
+    COMMIT;
+END //
+
+DELIMITER ;
+
+--3. sp_audit_payroll(p_salary_month)
+--财务审核无误后锁定为"已发放"
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_audit_payroll;
+
+CREATE PROCEDURE sp_audit_payroll(IN p_salary_month CHAR(7))
+BEGIN
+    UPDATE monthly_salary_summary SET pay_status = '已发放'
+    WHERE salary_month = p_salary_month AND pay_status = '待审核';
+END //
+
+DELIMITER ;
+
+--4. sp_unlock_payroll(p_salary_month)
+--已发放月份发现错误时解锁，允许冲销修正后重算
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_unlock_payroll;
+
+CREATE PROCEDURE sp_unlock_payroll(IN p_salary_month CHAR(7))
+BEGIN
+    UPDATE monthly_salary_summary SET pay_status = '待审核'
+    WHERE salary_month = p_salary_month AND pay_status = '已发放';
+END //
+
+DELIMITER ;
+
+--5. sp_delete_employee(p_emp_id)
+--员工的删除为逻辑删除，将状态改为离职。
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_delete_employee;
+
+CREATE PROCEDURE sp_delete_employee(IN p_emp_id INT)
+BEGIN
+    UPDATE employees SET emp_status = '离职' WHERE emp_id = p_emp_id;
+END //
+
+DELIMITER ;
+
+--6. sp_query_my_salary(p_emp_id, p_salary_month)
+--个人查看工资要求用存储过程实现。
+--普通员工 → 仅返回个人当月工资
+--分部经理及以上 → 返回本部门全员当月工资，个人工资置顶（UNION ALL，本人标记在前）
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_query_my_salary;
+
+CREATE PROCEDURE sp_query_my_salary(IN p_emp_id INT, IN p_salary_month CHAR(7))
+BEGIN
+    DECLARE v_dept_id INT;
+    DECLARE v_is_manager INT DEFAULT 0;
+
+    -- 获取员工所在部门
+    SELECT e.dept_id INTO v_dept_id FROM employees e WHERE e.emp_id = p_emp_id;
+
+    -- 判断是否为部门经理（直接查 departments.manager_emp_id，比岗位名称更可靠）
+    SELECT COUNT(*) INTO v_is_manager FROM departments
+    WHERE manager_emp_id = p_emp_id;
+
+    IF v_is_manager > 0 THEN
+        (SELECT '本人' AS tag, d.* FROM v_payroll_dept_detail d
+         WHERE d.emp_id = p_emp_id AND d.salary_month = p_salary_month)
+        UNION ALL
+        (SELECT '部门成员' AS tag, d.* FROM v_payroll_dept_detail d
+         WHERE d.dept_id = v_dept_id AND d.emp_id != p_emp_id
+           AND d.salary_month = p_salary_month ORDER BY d.emp_id);
+    ELSE
+        SELECT '个人' AS tag, d.* FROM v_payroll_personal d
+        WHERE d.emp_id = p_emp_id AND d.salary_month = p_salary_month;
+    END IF;
+END //
+
+DELIMITER ;
+
+--7. sp_calculate_seniority_salary(p_salary_month)
+--工龄工资在数据库端全部计算并保存在**单独的表** seniority_salary 中。
+--自动判断发放月度适用的规则（start_date ≤ 薪月 ≤ end_date），
+--计算结果先写入独立表，再同步到月度工资明细。
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_calculate_seniority_salary;
+
+CREATE PROCEDURE sp_calculate_seniority_salary(IN p_salary_month CHAR(7))
+BEGIN
+    DECLARE v_seniority_cat INT;
+    DECLARE v_salary_date DATE;
+
+    SELECT cat_id INTO v_seniority_cat FROM salary_categories WHERE cat_name = '工龄工资' LIMIT 1;
+    SET v_salary_date = CONCAT(p_salary_month, '-01');
+
+    START TRANSACTION;
+
+    -- ① 写入工龄工资独立表
+    INSERT INTO seniority_salary(emp_id, salary_month, rule_id, service_years, amount)
+    SELECT e.emp_id, p_salary_month, sr.rule_id,
+           TIMESTAMPDIFF(YEAR, e.entry_date, v_salary_date),
+           sr.base_amount + (TIMESTAMPDIFF(YEAR, e.entry_date, v_salary_date) * sr.add_amount)
+    FROM employees e
+    CROSS JOIN seniority_rules sr
+    WHERE e.emp_status = '在职'
+      AND sr.start_date <= v_salary_date
+      AND (sr.end_date IS NULL OR sr.end_date >= v_salary_date)
+    ON DUPLICATE KEY UPDATE rule_id=VALUES(rule_id), service_years=VALUES(service_years), amount=VALUES(amount);
+
+    -- ② 同步到月度工资明细
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
+    SELECT ss.emp_id, ss.salary_month, v_seniority_cat, ss.amount
+    FROM seniority_salary ss WHERE ss.salary_month = p_salary_month
+    ON DUPLICATE KEY UPDATE amount = VALUES(amount);
+
+    COMMIT;
+END //
+
+DELIMITER ;
+
+--8. sp_upsert_manual_item(p_emp_id, p_salary_month, p_cat_name, p_amount, p_note)
+--手动录入/修改工资项。
+--校验：仅允许 calc_mode = '手动录入' 或 '系统计算(可覆盖)' 的类别，已发放月份禁止修改。
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_upsert_manual_item;
+
+CREATE PROCEDURE sp_upsert_manual_item(
+    IN p_emp_id INT, 
+    IN p_salary_month CHAR(7),
+    IN p_cat_name VARCHAR(40), 
+    IN p_amount DECIMAL(10,2), 
+    IN p_note VARCHAR(100)
+)
+BEGIN
+    DECLARE v_cat_id INT;
+    DECLARE v_calc_mode VARCHAR(20);
+    -- 新增错误信息变量，用于拼接动态提示
+    DECLARE v_err_msg VARCHAR(200);
+
+    SELECT cat_id, calc_mode INTO v_cat_id, v_calc_mode
+    FROM salary_categories 
+    WHERE cat_name = p_cat_name LIMIT 1;
+
+    -- 1. 校验薪资分类是否允许手动修改
+    IF v_calc_mode NOT IN ('手动录入','系统计算(可覆盖)') THEN
+        SET v_err_msg = CONCAT(p_cat_name, ' 不可手动修改');
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_err_msg;
+    END IF;
+
+    -- 2. 校验分类是否存在（补充容错，防止v_cat_id为空导致插入失败）
+    IF v_cat_id IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '不存在该薪资分类';
+    END IF;
+
+    -- 3. 校验当月工资是否已发放
+    IF EXISTS (SELECT 1 FROM monthly_salary_summary
+        WHERE emp_id=p_emp_id AND salary_month=p_salary_month AND pay_status='已发放') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '已发放月份的工资不可修改';
+    END IF;
+
+    -- 4. 插入/更新薪资明细（UPSERT逻辑不变）
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount, is_overridden, override_note)
+    VALUES (p_emp_id, p_salary_month, v_cat_id, p_amount, 1, p_note)
+    ON DUPLICATE KEY UPDATE 
+        amount=VALUES(amount), 
+        is_overridden=1, 
+        override_note=VALUES(override_note);
+END //
+
+DELIMITER ;
+
+--9. sp_recalc_attendance_items(p_emp_id, p_salary_month)
+--统计当月考勤，重新计算 4 项并 UPSERT 到月度工资明细。
+-- 请假 100/天 | 迟到早退 50/次 | 旷工 300/天 | 全勤奖励 300（无任何缺勤时）。
+-- 供触发器和手动全量重算调用。
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_recalc_attendance_items;
+
+CREATE PROCEDURE sp_recalc_attendance_items(IN p_emp_id INT, IN p_salary_month CHAR(7))
+BEGIN
+    DECLARE v_full_cat, v_leave_cat, v_absent_cat, v_late_cat INT;
+    DECLARE v_leave_days, v_absent_days, v_late_times INT DEFAULT 0;
+    DECLARE v_month_start DATE DEFAULT CONCAT(p_salary_month, '-01');
+    DECLARE v_month_end   DATE DEFAULT LAST_DAY(v_month_start);
+
+    SELECT cat_id INTO v_full_cat   FROM salary_categories WHERE cat_name='全勤奖励'     LIMIT 1;
+    SELECT cat_id INTO v_leave_cat  FROM salary_categories WHERE cat_name='请假扣款'     LIMIT 1;
+    SELECT cat_id INTO v_absent_cat FROM salary_categories WHERE cat_name='旷工扣款'     LIMIT 1;
+    SELECT cat_id INTO v_late_cat   FROM salary_categories WHERE cat_name='迟到早退扣款' LIMIT 1;
+
+    SELECT COUNT(*) INTO v_leave_days  FROM attendance_records
+    WHERE emp_id=p_emp_id AND att_type='请假'     AND att_date BETWEEN v_month_start AND v_month_end;
+    SELECT COUNT(*) INTO v_absent_days FROM attendance_records
+    WHERE emp_id=p_emp_id AND att_type='旷工'     AND att_date BETWEEN v_month_start AND v_month_end;
+    SELECT COUNT(*) INTO v_late_times  FROM attendance_records
+    WHERE emp_id=p_emp_id AND att_type='迟到早退' AND att_date BETWEEN v_month_start AND v_month_end;
+
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount) VALUES
+    (p_emp_id, p_salary_month, v_full_cat,
+     IF(v_leave_days=0 AND v_absent_days=0 AND v_late_times=0, 300.00, 0.00))
+    ON DUPLICATE KEY UPDATE amount=VALUES(amount);
+
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount) VALUES
+    (p_emp_id, p_salary_month, v_leave_cat,  -v_leave_days * 100.00)
+    ON DUPLICATE KEY UPDATE amount=VALUES(amount);
+
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount) VALUES
+    (p_emp_id, p_salary_month, v_absent_cat, -v_absent_days * 300.00)
+    ON DUPLICATE KEY UPDATE amount=VALUES(amount);
+
+    INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount) VALUES
+    (p_emp_id, p_salary_month, v_late_cat,   -v_late_times * 50.00)
+    ON DUPLICATE KEY UPDATE amount=VALUES(amount);
+END //
+
+DELIMITER ;
+
+
+
+
+
+

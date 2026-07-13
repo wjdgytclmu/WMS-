@@ -1,0 +1,419 @@
+
+-- 1. 临时关闭外键约束检查
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- 2. 清空表，重置自增ID
+TRUNCATE TABLE employees;
+TRUNCATE TABLE departments;
+TRUNCATE TABLE titles;
+TRUNCATE TABLE positions;
+TRUNCATE TABLE salary_categories;
+TRUNCATE TABLE seniority_rules;
+TRUNCATE TABLE title_salary;
+TRUNCATE TABLE position_salary;
+TRUNCATE TABLE attendance_records;
+TRUNCATE TABLE emp_title_history;
+TRUNCATE TABLE emp_position_history;
+TRUNCATE TABLE monthly_salary_details;
+TRUNCATE TABLE monthly_salary_summary;
+TRUNCATE TABLE seniority_salary;
+TRUNCATE TABLE sys_config;
+
+-- 3. 恢复外键校验（必须执行，避免后续数据错乱）
+SET FOREIGN_KEY_CHECKS = 1;
+
+--初始化7个基本表数据
+--0.1 职称表 titles
+INSERT INTO titles(title_name)
+VALUES
+('实习生'),
+('初级工程师'),
+('中级工程师'),
+('高级工程师'),
+('资深工程师'),
+('技术专家'),
+('主管'),
+('部门经理'),
+('总监'),
+('副总经理'),
+('总经理');
+
+--0.2 岗位表 positions
+INSERT INTO positions(pos_level, pos_name)
+VALUES
+(1, '总经理'),
+(1, '副总经理'),
+(2, '部门经理'),
+(2, '分部经理'),
+(2, '技术主管'),
+(2, '产品主管'),
+(2, '后端开发工程师'),
+(2, '前端开发工程师'),
+(2, '测试工程师'),
+(2, '产品经理'),
+(2, 'UI 设计师'),
+(2, '运维工程师'),
+(3, '人事专员'),
+(3, '财务专员'),
+(3, '项目助理'),
+(3, '行政专员');
+
+--0.3 工资类别表 salary_categories
+INSERT INTO salary_categories(cat_name, calc_mode, cat_type)
+VALUES
+('基本工资',    '手动录入',          '应发'),
+('职称工资',    '系统计算',          '应发'),
+('岗位工资',    '系统计算',          '应发'),
+('工龄工资',    '系统计算',          '应发'),
+('全勤奖励',    '系统计算(可覆盖)',   '应发'),
+('项目补贴',    '手动录入',          '应发'),
+('请假扣款',    '系统计算(可覆盖)',   '应扣'),
+('旷工扣款',    '系统计算(可覆盖)',   '应扣'),
+('迟到早退扣款','系统计算(可覆盖)',   '应扣'),
+('个税扣除',    '手动录入',          '应扣');
+
+--0.4 工龄规则表 seniority_rules
+INSERT INTO seniority_rules(rule_name, base_amount, add_amount, start_date, end_date)
+VALUES
+('工龄规则 V1', 200.00, 100.00, '2015-01-01', '2019-12-31'),
+('工龄规则 V2', 300.00, 300.00, '2020-01-01', '2025-12-31'),
+('工龄规则 V3', 500.00, 150.00, '2026-01-01', NULL);
+
+--0.5 部门表 departments（自关联，由顶向下逐级插入）
+-- 总部（parent 为 NULL）
+INSERT INTO departments(parent_dept_id, dept_level, dept_name)
+VALUES (NULL, 1, '集团总部');
+
+-- 一级部门（parent = 总部 dept_id = 1）
+INSERT INTO departments(parent_dept_id, dept_level, dept_name)
+VALUES
+(1, 2, '研发部'),
+(1, 2, '产品部'),
+(1, 2, '人事部'),
+(1, 2, '财务部'),
+(1, 2, '市场部');
+
+-- 二级分部
+-- 研发部(dept_id=2) 下属
+INSERT INTO departments(parent_dept_id, dept_level, dept_name)
+VALUES (2, 3, '后端研发分部'), (2, 3, '前端研发分部');
+-- 产品部(dept_id=3) 下属
+INSERT INTO departments(parent_dept_id, dept_level, dept_name)
+VALUES (3, 3, '产品调研部'), (3, 3, '产品策划部');
+-- 人事部(dept_id=4) 下属
+INSERT INTO departments(parent_dept_id, dept_level, dept_name)
+VALUES (4, 3, '招聘培训分部'), (4, 3, '薪酬绩效分部');
+-- 财务部(dept_id=5) 下属
+INSERT INTO departments(parent_dept_id, dept_level, dept_name)
+VALUES (5, 3, '会计核算分部'), (5, 3, '预算审计分部');
+-- 市场部(dept_id=6) 下属
+INSERT INTO departments(parent_dept_id, dept_level, dept_name)
+VALUES (6, 3, '品牌推广分部'), (6, 3, '渠道销售分部');
+
+--0.6 职称-工资中间表 title_salary
+INSERT INTO title_salary(title_id, cat_id, salary_amount)
+VALUES
+-- 技术序列
+( 1, 1, 2500.00),  ( 1, 2,  800.00),   -- 实习生
+( 2, 1, 4000.00),  ( 2, 2, 1500.00),   -- 初级工程师
+( 3, 1, 5500.00),  ( 3, 2, 2500.00),   -- 中级工程师
+( 4, 1, 7500.00),  ( 4, 2, 4000.00),   -- 高级工程师
+( 5, 1, 9500.00),  ( 5, 2, 6000.00),   -- 资深工程师
+( 6, 1, 12000.00), ( 6, 2, 8500.00),   -- 技术专家
+-- 管理序列
+( 7, 1, 5000.00),  ( 7, 2, 2000.00),   -- 主管
+( 8, 1, 7000.00),  ( 8, 2, 3500.00),   -- 部门经理
+( 9, 1, 9000.00),  ( 9, 2, 5500.00),   -- 总监
+(10, 1, 11000.00), (10, 2, 7500.00),   -- 副总经理
+(11, 1, 14000.00), (11, 2, 10000.00);  -- 总经理
+
+--0.7 岗位-工资中间表 position_salary
+INSERT INTO position_salary(pos_id, cat_id, salary_amount)
+VALUES
+( 1, 3, 10000.00),  -- 总经理
+( 2, 3,  7000.00),  -- 副总经理
+( 3, 3,  5000.00),  -- 部门经理
+( 4, 3,  4000.00),  -- 分部经理
+( 5, 3,  4000.00),  -- 技术主管
+( 6, 3,  3800.00),  -- 产品主管
+( 7, 3,  5000.00),  -- 后端开发工程师
+( 8, 3,  5000.00),  -- 前端开发工程师
+( 9, 3,  4200.00),  -- 测试工程师
+(10, 3,  4500.00),  -- 产品经理
+(11, 3,  3500.00),  -- UI 设计师
+(12, 3,  4000.00),  -- 运维工程师
+(13, 3,  2500.00),  -- 人事专员
+(14, 3,  2500.00),  -- 财务专员
+(15, 3,  2000.00),  -- 项目助理
+(16, 3,  2200.00);  -- 行政专员
+
+--0.8 系统配置
+INSERT INTO sys_config(config_key, config_value) VALUES ('pay_day', '10');
+
+--根据7个基本表数据，运用存储过程随机生成500条员工数据
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS generate_500_emp_data;
+
+CREATE PROCEDURE generate_500_emp_data(IN target_count INT)
+BEGIN
+    -- ========== 变量声明 ==========
+    DECLARE i INT DEFAULT 1;
+    DECLARE v_emp_id INT;
+    DECLARE v_dept_id INT;
+    DECLARE v_title_id INT;
+    DECLARE v_pos_id INT;
+    DECLARE v_entry_date DATE;
+    DECLARE v_change_cnt INT;
+    DECLARE v_j INT;
+    DECLARE v_old_id INT;
+    DECLARE v_new_id INT;
+    DECLARE v_change_time DATETIME;
+    DECLARE v_tenure_days INT;
+    DECLARE v_att_date DATE;
+    DECLARE v_att_type VARCHAR(10);
+    DECLARE v_rand INT;
+    DECLARE v_salary_month CHAR(7) DEFAULT '2026-07';
+    DECLARE v_total_income DECIMAL(10,2) DEFAULT 0.00;
+    DECLARE v_total_deduct DECIMAL(10,2) DEFAULT 0.00;
+    DECLARE v_real_salary DECIMAL(10,2) DEFAULT 0.00;
+    DECLARE v_subsidy_cat INT;
+    DECLARE v_tax_cat INT;
+    DECLARE v_seniority_cat INT;
+    DECLARE v_service_years INT;
+    DECLARE v_title_count INT;
+    DECLARE v_pos_count INT;
+
+    -- 手动录入项 cat_id 只查一次，避免循环内重复子查询
+    SELECT cat_id INTO v_subsidy_cat    FROM salary_categories WHERE cat_name = '项目补贴';
+    SELECT cat_id INTO v_tax_cat        FROM salary_categories WHERE cat_name = '个税扣除';
+    SELECT cat_id INTO v_seniority_cat  FROM salary_categories WHERE cat_name = '工龄工资';
+    SELECT COUNT(*) INTO v_title_count FROM titles;
+    SELECT COUNT(*) INTO v_pos_count   FROM positions;
+
+    -- ========== 事务保护：中途失败自动回滚，不留脏数据 ==========
+    DELETE FROM monthly_salary_summary WHERE salary_month = v_salary_month;
+    DELETE FROM monthly_salary_details WHERE salary_month = v_salary_month;
+    DELETE FROM attendance_records WHERE att_date BETWEEN '2026-07-01' AND '2026-07-31';
+    DELETE FROM emp_position_history;
+    DELETE FROM emp_title_history;
+    DELETE FROM employees;
+    START TRANSACTION;
+
+    -- ========== 主循环 ==========
+    WHILE i <= target_count DO
+
+        -- 1. 从真实表中随机取 ID（ORDER BY RAND() 保证不会命中已删除的空洞 ID）
+        SELECT dept_id  INTO v_dept_id  FROM departments ORDER BY RAND() LIMIT 1;
+        SELECT title_id INTO v_title_id FROM titles      ORDER BY RAND() LIMIT 1;
+        SELECT pos_id   INTO v_pos_id   FROM positions   ORDER BY RAND() LIMIT 1;
+
+        -- 随机入职时间：2016-01-01 ~ 2025-12-31
+        SET v_entry_date = DATE_ADD('2016-01-01', INTERVAL FLOOR(RAND() * 3650) DAY);
+
+        -- 插入员工
+        INSERT INTO employees(emp_name, dept_id, cur_title_id, cur_position_id, entry_date, emp_status)
+        VALUES (CONCAT('员工', LPAD(i, 4, '0')), v_dept_id, v_title_id, v_pos_id, v_entry_date, '在职');
+        SET v_emp_id = LAST_INSERT_ID();
+
+        -- 计算在职天数，变更时间将在入职 ~ 今天之间随机分布
+        SET v_tenure_days = DATEDIFF(NOW(), v_entry_date);
+
+        -- 2. 职称变更履历（链式变更：初始职称 → ... → 当前职称，时间递增）
+        SET v_change_cnt = FLOOR(RAND() * 3) + 1;
+
+        -- 随机初始职称（≠ 当前职称）
+        SET v_old_id = (SELECT title_id FROM titles ORDER BY RAND() LIMIT 1);
+        WHILE v_old_id = v_title_id AND v_title_count > 1 DO
+            SET v_old_id = (SELECT title_id FROM titles ORDER BY RAND() LIMIT 1);
+        END WHILE;
+
+        SET v_j = 1;
+        WHILE v_j <= v_change_cnt DO
+            -- 末条 new = 当前职称，中间条随机（且 ≠ 上一条 old 和当前职称）
+            IF v_j = v_change_cnt THEN
+                SET v_new_id = v_title_id;
+            ELSE
+                SET v_new_id = (SELECT title_id FROM titles ORDER BY RAND() LIMIT 1);
+                WHILE (v_new_id = v_old_id OR v_new_id = v_title_id) AND v_title_count > 2 DO
+                    SET v_new_id = (SELECT title_id FROM titles ORDER BY RAND() LIMIT 1);
+                END WHILE;
+            END IF;
+
+            -- 按顺序分散时间：变更 j 落在在职期的 j/(cnt+1) 位置 ± 微调
+            SET v_change_time = DATE_ADD(
+                CONCAT(v_entry_date, ' 00:00:00'),
+                INTERVAL FLOOR(
+                    (v_j / (v_change_cnt + 1)) * v_tenure_days * 86400
+                    + RAND() * (v_tenure_days / (v_change_cnt + 1)) * 86400 * 0.6
+                ) SECOND
+            );
+
+            INSERT INTO emp_title_history(emp_id, old_title_id, new_title_id, change_time)
+            VALUES (v_emp_id, v_old_id, v_new_id, v_change_time);
+
+            -- 下一条的 old = 当前 new，形成连续链
+            SET v_old_id = v_new_id;
+            SET v_j = v_j + 1;
+        END WHILE;
+
+        -- 3. 岗位变更履历（同理，链式：初始岗位 → ... → 当前岗位）
+        SET v_change_cnt = FLOOR(RAND() * 3) + 1;
+
+        SET v_old_id = (SELECT pos_id FROM positions ORDER BY RAND() LIMIT 1);
+        WHILE v_old_id = v_pos_id AND v_pos_count > 1 DO
+            SET v_old_id = (SELECT pos_id FROM positions ORDER BY RAND() LIMIT 1);
+        END WHILE;
+
+        SET v_j = 1;
+        WHILE v_j <= v_change_cnt DO
+            IF v_j = v_change_cnt THEN
+                SET v_new_id = v_pos_id;
+            ELSE
+                SET v_new_id = (SELECT pos_id FROM positions ORDER BY RAND() LIMIT 1);
+                WHILE (v_new_id = v_old_id OR v_new_id = v_pos_id) AND v_pos_count > 2 DO
+                    SET v_new_id = (SELECT pos_id FROM positions ORDER BY RAND() LIMIT 1);
+                END WHILE;
+            END IF;
+
+            SET v_change_time = DATE_ADD(
+                CONCAT(v_entry_date, ' 00:00:00'),
+                INTERVAL FLOOR(
+                    (v_j / (v_change_cnt + 1)) * v_tenure_days * 86400
+                    + RAND() * (v_tenure_days / (v_change_cnt + 1)) * 86400 * 0.6
+                ) SECOND
+            );
+
+            INSERT INTO emp_position_history(emp_id, old_pos_id, new_pos_id, change_time)
+            VALUES (v_emp_id, v_old_id, v_new_id, v_change_time);
+
+            SET v_old_id = v_new_id;
+            SET v_j = v_j + 1;
+        END WHILE;
+
+        -- 4. 考勤记录（6 月 + 7 月每天一条，共 61 天，加权随机）
+        SET v_att_date = '2026-07-01';
+        WHILE v_att_date <= '2026-07-31' DO
+            SET v_rand = FLOOR(RAND() * 100);
+            SET v_att_type = CASE
+                WHEN v_rand < 90 THEN '正常出勤'
+                WHEN v_rand < 95 THEN '迟到早退'
+                WHEN v_rand < 99 THEN '请假'
+                ELSE '旷工'
+            END;
+            INSERT INTO attendance_records(emp_id, att_type, att_date)
+            VALUES (v_emp_id, v_att_type, v_att_date);
+            SET v_att_date = DATE_ADD(v_att_date, INTERVAL 1 DAY);
+        END WHILE;
+
+        -- 5. 职称薪资 → 月度明细
+        INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
+        SELECT v_emp_id, v_salary_month, ts.cat_id, ts.salary_amount
+        FROM title_salary ts WHERE ts.title_id = v_title_id;
+
+        -- 6. 岗位薪资 → 月度明细
+        INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
+        SELECT v_emp_id, v_salary_month, ps.cat_id, ps.salary_amount
+        FROM position_salary ps WHERE ps.pos_id = v_pos_id;
+
+        -- 7. 手动录入项：项目补贴(500~3000)、个税扣除(-300~-1000)
+        INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
+        VALUES
+        (v_emp_id, v_salary_month, v_subsidy_cat, FLOOR(RAND() * 2500) + 500),
+        (v_emp_id, v_salary_month, v_tax_cat,     -FLOOR(RAND() * 700) - 300);
+
+        -- 7.5 工龄工资：根据当前生效规则自动计算
+        --      formula = base_amount + (工龄年数 × add_amount)
+        INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
+        SELECT v_emp_id, v_salary_month, v_seniority_cat,
+               sr.base_amount + (
+                   TIMESTAMPDIFF(YEAR, v_entry_date, CONCAT(v_salary_month, '-01')) * sr.add_amount
+               )
+        FROM seniority_rules sr
+        WHERE sr.start_date <= CONCAT(v_salary_month, '-01')
+          AND (sr.end_date IS NULL OR sr.end_date >= CONCAT(v_salary_month, '-01'))
+        LIMIT 1;
+
+        -- 8. 汇总 → 月度工资总表
+        SELECT
+            SUM(IF(sc.cat_type = '应发', msd.amount, 0)),
+            ABS(SUM(IF(sc.cat_type = '应扣', msd.amount, 0)))
+        INTO v_total_income, v_total_deduct
+        FROM monthly_salary_details msd
+        LEFT JOIN salary_categories sc ON msd.cat_id = sc.cat_id
+        WHERE msd.emp_id = v_emp_id AND msd.salary_month = v_salary_month;
+
+        SET v_real_salary = v_total_income - v_total_deduct;
+
+        INSERT INTO monthly_salary_summary(emp_id, salary_month, total_income, total_deduct, real_salary, pay_status)
+        VALUES (v_emp_id, v_salary_month, v_total_income, v_total_deduct, v_real_salary, '未发放');
+
+        SET i = i + 1;
+    END WHILE;
+
+    -- 9. 为每个部门提拔一名员工为经理，岗位/职称/部门等级三层匹配
+    --     dept_level=1 → 总经理    dept_level=2 → 部门经理    dept_level=3 → 分部经理
+    UPDATE employees e
+    INNER JOIN (
+        SELECT d.dept_id, d.dept_level,
+            (SELECT e2.emp_id FROM employees e2
+             WHERE e2.dept_id = d.dept_id
+             ORDER BY RAND() LIMIT 1) AS mgr_emp_id
+        FROM departments d
+    ) t ON e.emp_id = t.mgr_emp_id
+    SET
+        e.cur_title_id = CASE t.dept_level
+            WHEN 1 THEN (SELECT title_id FROM titles WHERE title_name = '总经理'   LIMIT 1)
+            WHEN 2 THEN (SELECT title_id FROM titles WHERE title_name = '部门经理' LIMIT 1)
+            WHEN 3 THEN (SELECT title_id FROM titles WHERE title_name = '主管'     LIMIT 1)
+        END,
+        e.cur_position_id = CASE t.dept_level
+            WHEN 1 THEN (SELECT pos_id FROM positions WHERE pos_name = '总经理'   LIMIT 1)
+            WHEN 2 THEN (SELECT pos_id FROM positions WHERE pos_name = '部门经理' LIMIT 1)
+            WHEN 3 THEN (SELECT pos_id FROM positions WHERE pos_name = '分部经理' LIMIT 1)
+        END;
+
+    -- 将提拔后的员工写入部门经理字段
+    UPDATE departments d
+    SET manager_emp_id = (
+        SELECT e.emp_id FROM employees e
+        WHERE e.dept_id = d.dept_id
+          AND e.cur_title_id IN (
+              SELECT title_id FROM titles
+              WHERE title_name IN ('总经理','副总经理','部门经理')
+          )
+        LIMIT 1
+    );
+
+    COMMIT;
+END //
+
+DELIMITER ;
+
+--执行存储过程，添加500条员工数据
+CALL generate_500_emp_data(500);
+
+--校验数据
+SELECT COUNT(*) AS 员工总数 FROM employees;
+SELECT COUNT(*) AS 职称变更记录 FROM emp_title_history;
+SELECT COUNT(*) AS 岗位变更记录 FROM emp_position_history;
+SELECT COUNT(*) AS 考勤记录 FROM attendance_records;
+SELECT COUNT(*) AS 月度薪资明细 FROM monthly_salary_details;
+SELECT COUNT(*) AS 月度薪资汇总台账 FROM monthly_salary_summary;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

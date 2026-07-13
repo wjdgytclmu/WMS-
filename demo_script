@@ -1,0 +1,323 @@
+-- ============================================================================
+-- 工资管理系统（WMS）— 数据库成果演示脚本
+-- 用途：逐题目验证项目成果，可在 MySQL 中分段选中运行
+-- 前置：已按顺序执行 create_table.sql → create_functions → create_view
+--       → create_procedure → create_trigger → create_event → generate_500_emp_data
+-- ============================================================================
+
+USE WMS;
+
+
+-- ############################################################################
+-- 第一阶段：初始化当月工资
+-- 说明：手动调用存储过程，模拟每月发薪日凌晨定时任务的执行效果
+--       sp_init_monthly_salary   → 把系统计算项写入月度工资明细
+--       sp_calculate_seniority_salary → 计算工龄工资并写入独立表 + 同步到明细
+-- ############################################################################
+
+-- 1.1 初始化 2026 年 7 月工资明细
+-- 内部逻辑：复制 6 月基本工资 → 取发薪日前有效的职称/岗位工资 → 考勤项默认填 0
+CALL sp_init_monthly_salary('2026-07');
+
+-- 1.2 计算 7 月工龄工资
+-- 内部逻辑：匹配当前生效的工龄规则 V3（base=500, add=150/年）
+--           按入职日期算工龄年数 → base + 年限×add → 写入 seniority_salary 独立表
+--           再从独立表同步到 monthly_salary_details（cat_id=4）
+CALL sp_calculate_seniority_salary('2026-07');
+
+
+-- ############################################################################
+-- 第二阶段：模拟考勤变动，验证触发器
+-- 说明：考勤表一次 INSERT/UPDATE/DELETE，触发器自动重算当月缺勤扣款和全勤奖励
+--       计算规则：请假 100/天 | 迟到早退 50/次 | 旷工 300/天 | 满勤奖 300
+-- ############################################################################
+
+-- 2.1 员工 5：新增 1 天请假 → 触发器自动：请假扣款 +100，全勤奖励归 0
+INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (5, '请假', '2026-07-03');
+
+-- 2.2 员工 10：新增 1 天旷工 → 触发器自动：旷工扣款 +300
+INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (10, '旷工', '2026-07-05');
+
+-- 2.3 查询月度工资明细，验证触发器是否正确更新了扣款和全勤奖励
+SELECT e.emp_name, sc.cat_name, msd.amount
+FROM monthly_salary_details msd
+JOIN employees e ON msd.emp_id = e.emp_id
+JOIN salary_categories sc ON msd.cat_id = sc.cat_id
+WHERE msd.emp_id IN (5, 10) AND msd.salary_month = '2026-07'
+  AND sc.cat_name IN ('请假扣款','旷工扣款','全勤奖励');
+
+
+-- ############################################################################
+-- 第三阶段：手动录入工资项
+-- 说明：HR 手动修改"手动录入"或"系统计算(可覆盖)"类别的工资金额
+--       修改后 is_overridden 标记为 1，override_note 记录原因，便于审计
+-- ############################################################################
+
+-- 3.1 员工 2 的项目补贴从随机默认值改为 2000（优秀项目奖励）
+CALL sp_upsert_manual_item(2, '2026-07', '项目补贴', 2000.00, '优秀项目奖励');
+
+-- 3.2 员工 2 的个税扣除改为 -800（累计计税调整）
+CALL sp_upsert_manual_item(2, '2026-07', '个税扣除', -800.00, '累计计税调整');
+
+-- 3.3 查看员工 2 被手动修改过的工资项，确认覆盖标记和备注已记录
+SELECT e.emp_name, sc.cat_name, msd.amount, msd.is_overridden, msd.override_note
+FROM monthly_salary_details msd
+JOIN employees e ON msd.emp_id = e.emp_id
+JOIN salary_categories sc ON msd.cat_id = sc.cat_id
+WHERE msd.emp_id = 2 AND msd.salary_month = '2026-07' AND msd.is_overridden = 1;
+
+
+-- ############################################################################
+-- 第四阶段：逐题目演示（对应题目.md 7.3.1 基本需求 + 7.3.2 运维需求变更）
+-- ############################################################################
+
+SELECT '========================================' AS '';
+SELECT '第四阶段：逐题目演示' AS '';
+SELECT '========================================' AS '';
+
+
+-- ============================================================================
+-- 题目 (2)：基础数据视图 + 逻辑删除
+-- 要求：员工视图直接输出部门名称；部门视图输出部门经理姓名；删除为逻辑删除
+-- ============================================================================
+SELECT '--- 题目 (2) 视图 + 逻辑删除 ---' AS '';
+
+-- 在职员工视图：关联部门/职称/岗位表，一行展示所有中文名称
+SELECT * FROM v_active_employees LIMIT 10;
+
+-- 部门信息视图：含父部门名称、经理姓名、本部门在职员工列表
+SELECT * FROM v_departments_info;
+
+-- 逻辑删除：将员工 3 状态改为"离职"，数据保留但视图中不可见
+CALL sp_delete_employee(3);
+SELECT emp_id, emp_name, emp_status FROM employees WHERE emp_id = 3;
+SELECT COUNT(*) AS 在职人数 FROM v_active_employees;
+
+
+-- ============================================================================
+-- 题目 (3)：考勤表 CRUD 维护
+-- 要求：完成考勤表的增删改查
+-- ============================================================================
+SELECT '--- 题目 (3) 考勤表 CRUD ---' AS '';
+
+-- 增：员工 1 7月1日正常出勤
+INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (1, '正常出勤', '2026-07-01');
+-- 查：确认插入成功
+SELECT * FROM attendance_records WHERE emp_id = 1 AND att_date = '2026-07-01';
+-- 改：将正常出勤改为迟到早退
+UPDATE attendance_records SET att_type = '迟到早退' WHERE emp_id = 1 AND att_date = '2026-07-01';
+-- 删：删除该条考勤记录
+DELETE FROM attendance_records WHERE emp_id = 1 AND att_date = '2026-07-01';
+
+
+-- ============================================================================
+-- 题目 (5)：工龄工资独立表
+-- 要求：工龄工资在数据库端全部计算并保存在单独的一张表中
+-- ============================================================================
+SELECT '--- 题目 (5) 工龄工资独立表 ---' AS '';
+
+-- 查询 seniority_salary 独立表，展示员工工龄、适用规则和计算结果
+SELECT ss.*, e.emp_name, e.entry_date,
+       TIMESTAMPDIFF(YEAR, e.entry_date, '2026-07-01') AS 截止工龄
+FROM seniority_salary ss
+JOIN employees e ON ss.emp_id = e.emp_id
+WHERE ss.salary_month = '2026-07'
+ORDER BY ss.service_years DESC
+LIMIT 10;
+
+
+-- ============================================================================
+-- 题目 (6)：缺勤工资利用触发器实时动态更新
+-- 要求：手动增删改考勤数据时，触发器实时重新计算扣款
+-- ============================================================================
+SELECT '--- 题目 (6) 触发器实时更新缺勤扣款 ---' AS '';
+
+-- 查看员工 8 当前的请假扣款和全勤奖励（修改前）
+SELECT emp_id, cat_id, amount FROM monthly_salary_details
+WHERE emp_id = 8 AND salary_month = '2026-07'
+  AND cat_id IN (SELECT cat_id FROM salary_categories WHERE cat_name IN ('请假扣款','全勤奖励'));
+
+-- 给员工 8 新增一条请假记录 → 触发器立即重新计算并更新明细
+INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (8, '请假', '2026-07-10');
+
+-- 再次查看（修改后）：请假扣款应增加 100，全勤奖励应为 0
+SELECT emp_id, cat_id, amount FROM monthly_salary_details
+WHERE emp_id = 8 AND salary_month = '2026-07'
+  AND cat_id IN (SELECT cat_id FROM salary_categories WHERE cat_name IN ('请假扣款','全勤奖励'));
+
+
+-- ============================================================================
+-- 题目 (7)："计算"存储过程 → 审核 → 锁定 → 冲销修正完整流程
+-- 要求：设计存储过程完成"计算"功能，生成当月工资发放表
+-- ============================================================================
+SELECT '--- 题目 (7) 计算→审核→锁定→冲销修正 ---' AS '';
+
+-- ① 财务点击"计算"：汇总明细到总表，状态 = "待审核"
+CALL sp_calculate_payroll('2026-07');
+
+-- ② 按员工查询工资发放表（前 10 条）
+SELECT * FROM v_payroll_company WHERE salary_month = '2026-07' LIMIT 10;
+
+-- ③ 按部门查询：研发部及下属分部的工资
+SELECT * FROM v_payroll_company
+WHERE dept_name IN ('研发部','后端研发分部','前端研发分部') AND salary_month = '2026-07'
+ORDER BY dept_name, emp_name LIMIT 15;
+
+-- ④ 全公司汇总：人数、应发总额、应扣总额、实发总额
+SELECT salary_month, COUNT(*) AS 人数,
+       SUM(total_income) AS 应发总额, SUM(total_deduct) AS 应扣总额, SUM(real_salary) AS 实发总额
+FROM v_payroll_company WHERE salary_month = '2026-07' GROUP BY salary_month;
+
+-- ⑤ 审核无误，锁定为"已发放"
+CALL sp_audit_payroll('2026-07');
+
+-- ⑥ 核查发现错误：员工 5 的项目补贴多发了 500 元，需要冲销修正
+--     第一步：解锁
+CALL sp_unlock_payroll('2026-07');
+--     第二步：插入冲销记录（负金额抵消原记录，is_overridden=1 标记）
+INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount, is_overridden, override_note)
+SELECT 5, '2026-07', cat_id, -500, 1, '冲销：项目补贴多计'
+FROM salary_categories WHERE cat_name = '项目补贴'
+ON DUPLICATE KEY UPDATE
+    amount = VALUES(amount),
+    is_overridden = VALUES(is_overridden),
+    override_note = VALUES(override_note);
+--     第三步：重算 → 重新审核锁定
+CALL sp_calculate_payroll('2026-07');
+CALL sp_audit_payroll('2026-07');
+
+-- ⑦ 验证：员工 5 的项目补贴合计应为 (原始 - 500)
+SELECT e.emp_name, sc.cat_name, SUM(msd.amount) AS 合计
+FROM monthly_salary_details msd
+JOIN employees e ON msd.emp_id = e.emp_id
+JOIN salary_categories sc ON msd.cat_id = sc.cat_id
+WHERE msd.emp_id = 5 AND msd.salary_month = '2026-07' AND sc.cat_name = '项目补贴'
+GROUP BY e.emp_name, sc.cat_name;
+
+
+-- ============================================================================
+-- 题目 (8)：定时任务设计 + 配置表发薪日
+-- 要求：完成定时任务设计；通过 sys_config 配置表管理发薪日
+-- ============================================================================
+SELECT '--- 题目 (8) 定时任务 + 配置表 ---' AS '';
+
+-- 查看 EVENT 状态：evt_check_pay_day 每天凌晨 1 点触发
+SHOW EVENTS LIKE 'evt_check%';
+-- 确认 MySQL 事件调度器是否开启
+SHOW VARIABLES LIKE 'event_scheduler';
+
+-- 查看系统配置表中的发薪日设置
+SELECT * FROM sys_config WHERE config_key = 'pay_day';
+SELECT fn_pay_day() AS 当前发薪日;
+
+-- 演示修改发薪日：从 10 号改为 15 号（只需一条 UPDATE，无需重建任何对象）
+UPDATE sys_config SET config_value = '15' WHERE config_key = 'pay_day';
+SELECT fn_pay_day() AS 新发薪日;
+
+-- 恢复为 10 号
+UPDATE sys_config SET config_value = '10' WHERE config_key = 'pay_day';
+
+
+-- ============================================================================
+-- 题目 (9)：按年度计算各工资类别合计金额及占年度工资发放总额的比率
+-- ============================================================================
+SELECT '--- 题目 (9) 年度工资类别占比 ---' AS '';
+
+-- 视图 v_annual_category_ratio 自动按年度和工资类别统计
+SELECT * FROM v_annual_category_ratio ORDER BY year, total_amount DESC;
+
+
+-- ============================================================================
+-- 题目 (10)：按部门/员工计算月度、年度最高最低平均工资
+-- ============================================================================
+SELECT '--- 题目 (10) 部门/员工统计 ---' AS '';
+
+-- 各部门 7 月工资统计（最高/最低/平均实发工资）
+SELECT * FROM v_dept_salary_stats WHERE salary_month = '2026-07' ORDER BY avg_salary DESC;
+
+-- 员工 2026 年度月均工资 Top 10
+SELECT * FROM v_emp_annual_avg WHERE year = '2026' ORDER BY annual_avg_salary DESC LIMIT 10;
+
+-- 函数演示：研发部（dept_id=2）7 月平均工资
+SELECT fn_dept_avg_salary(2, '2026-07') AS 研发部7月均薪;
+
+-- 函数演示：员工 1 的 2026 年度月均工资
+SELECT fn_emp_annual_avg(1, '2026') AS 员工1年均月薪;
+
+
+-- ============================================================================
+-- 题目 (11)：2 类角色权限 + 存储过程查工资 + 经理权限 + 个人工资置顶
+-- 要求：个人查看工资用存储过程实现；分部经理及以上可看本部门全员，个人置顶
+-- ============================================================================
+SELECT '--- 题目 (11) 个人查工资（经理权限 + 置顶） ---' AS '';
+
+-- 先查找一位部门经理的 emp_id（用于演示经理查工资）
+SELECT e.emp_id, e.emp_name, d.dept_name, p.pos_name
+FROM employees e
+JOIN departments d ON e.dept_id = d.dept_id
+JOIN positions p ON e.cur_position_id = p.pos_id
+WHERE d.manager_emp_id = e.emp_id LIMIT 1;
+
+-- 经理查工资：第一行标记"本人"，后续为"部门成员"（用实际查出的 emp_id 替换）
+CALL sp_query_my_salary(385, '2026-07');
+
+-- 普通员工查工资：仅返回自己一条，标记"个人"
+CALL sp_query_my_salary(50, '2026-07');
+
+
+-- ============================================================================
+-- 7.3.2 运维需求变更：新旧工龄规则并存
+-- 要求：保留原规则，新增新规则，通过生效日期切换，无需改应用代码
+-- ============================================================================
+SELECT '--- 7.3.2 新旧工龄规则并存 ---' AS '';
+
+-- 查看全部三版工龄规则（V1→V2→V3，按时间无缝衔接）
+SELECT * FROM seniority_rules ORDER BY start_date;
+
+-- 查看 2026-07 当前适用的规则 ID 和详情
+SELECT fn_applicable_seniority_rule('2026-07') AS 适用规则ID;
+SELECT rule_name, base_amount, add_amount
+FROM seniority_rules WHERE rule_id = fn_applicable_seniority_rule('2026-07');
+
+-- 按规则统计工龄工资覆盖的人数和总额
+SELECT ss.salary_month, sr.rule_name, COUNT(*) AS 人数, SUM(ss.amount) AS 工龄工资总额
+FROM seniority_salary ss JOIN seniority_rules sr ON ss.rule_id = sr.rule_id
+GROUP BY ss.salary_month, sr.rule_name;
+
+
+-- ============================================================================
+-- 发放日锁定验证
+-- 要求：工资发放日之后不能修改发放日之前的工资（但允许 INSERT 冲销）
+-- ============================================================================
+SELECT '--- 发放日锁定验证（以下两条预期报错） ---' AS '';
+
+-- 尝试 UPDATE 已发放月份的明细 → 触发器拦截，报错
+UPDATE monthly_salary_details SET amount = 9999
+WHERE emp_id = 1 AND salary_month = '2026-07' AND cat_id = 1;
+
+-- 尝试 DELETE 已发放月份的明细 → 触发器拦截，报错
+DELETE FROM monthly_salary_details
+WHERE emp_id = 1 AND salary_month = '2026-07' AND cat_id = 1;
+
+-- 注意：INSERT 不会被拦截 → 冲销修正正是利用 INSERT 追加负金额记录实现的
+
+
+-- ============================================================================
+-- 全局校验：数据完整性检查
+-- ============================================================================
+SELECT '========================================' AS '';
+SELECT '全局校验' AS '';
+SELECT '========================================' AS '';
+
+-- 各表数据行数统计，验证 500 员工数据生成完整性
+SELECT '员工总数' AS 指标, COUNT(*) AS 数量 FROM employees
+UNION ALL SELECT '职称变更记录', COUNT(*) FROM emp_title_history
+UNION ALL SELECT '岗位变更记录', COUNT(*) FROM emp_position_history
+UNION ALL SELECT '考勤记录', COUNT(*) FROM attendance_records
+UNION ALL SELECT '月度工资明细(7月)', COUNT(*) FROM monthly_salary_details WHERE salary_month = '2026-07'
+UNION ALL SELECT '月度工资总表(7月)', COUNT(*) FROM monthly_salary_summary WHERE salary_month = '2026-07'
+UNION ALL SELECT '工龄工资独立表(7月)', COUNT(*) FROM seniority_salary WHERE salary_month = '2026-07';
+
+-- 部门经理覆盖率检查：16 个部门应全部有经理，NULL 表示缺失
+SELECT d.dept_name, COALESCE(e.emp_name, '⚠ 缺失') AS 经理
+FROM departments d LEFT JOIN employees e ON d.manager_emp_id = e.emp_id;

@@ -1,0 +1,25 @@
+SHOW EVENTS;
+
+-- EVENT：每天凌晨 1 点检查是否为发薪日，是则初始化当月工资
+-- 优势：改发薪日只需改 fn_pay_day()，EVENT 无需重建
+DELIMITER //
+DROP EVENT IF EXISTS evt_check_pay_day;
+CREATE EVENT evt_check_pay_day
+ON SCHEDULE EVERY 1 DAY
+STARTS CONCAT(CURDATE(), ' 01:00:00')
+ON COMPLETION PRESERVE
+ENABLE
+COMMENT '每天凌晨1点检查是否为发薪日'
+DO
+BEGIN
+    DECLARE v_this_month CHAR(7);
+
+    IF DAY(NOW()) = fn_pay_day() THEN
+        
+        SET v_this_month = DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 MONTH), '%Y-%m');
+        -- 例：10月10日触发 → 计算9月工资
+        CALL sp_init_monthly_salary(v_this_month);
+        CALL sp_calculate_seniority_salary(v_this_month);
+    END IF;
+END //
+DELIMITER ;

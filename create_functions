@@ -1,0 +1,66 @@
+--### 1. fn_dept_avg_salary(p_dept_id, p_year_month)
+-- 返回指定部门指定月份的平均实发工资。
+DELIMITER //
+DROP FUNCTION IF EXISTS fn_dept_avg_salary;
+CREATE FUNCTION fn_dept_avg_salary(p_dept_id INT, p_year_month CHAR(7))
+RETURNS DECIMAL(10,2) READS SQL DATA
+BEGIN
+    DECLARE v_avg DECIMAL(10,2);
+    SELECT ROUND(AVG(ms.real_salary), 2) INTO v_avg
+    FROM monthly_salary_summary ms
+    JOIN employees e ON ms.emp_id = e.emp_id
+    WHERE e.dept_id = p_dept_id AND ms.salary_month = p_year_month AND e.emp_status = '在职';
+    RETURN v_avg;
+END//
+
+DELIMITER ;
+
+DELIMITER //
+--### 2. fn_emp_annual_avg(p_emp_id, p_year)
+--返回指定员工指定年度的月均工资
+DROP FUNCTION IF EXISTS fn_emp_annual_avg;
+CREATE FUNCTION fn_emp_annual_avg(p_emp_id INT, p_year CHAR(4))
+RETURNS DECIMAL(10,2) READS SQL DATA
+BEGIN
+    DECLARE v_avg DECIMAL(10,2);
+    SELECT ROUND(AVG(ms.real_salary), 2) INTO v_avg
+    FROM monthly_salary_summary ms
+    WHERE ms.emp_id = p_emp_id AND LEFT(ms.salary_month, 4) = p_year;
+    RETURN v_avg;
+END//
+
+DELIMITER ;
+
+DELIMITER //
+--### 3. fn_applicable_seniority_rule(p_salary_month)
+--返回指定薪月适用的工龄规则 rule_id（按 start_date ≤ 薪月 ≤ end_date 匹配）。
+DROP FUNCTION IF EXISTS fn_applicable_seniority_rule;
+CREATE FUNCTION fn_applicable_seniority_rule(p_salary_month CHAR(7))
+RETURNS INT READS SQL DATA
+BEGIN
+    DECLARE v_rule_id INT;
+    SELECT rule_id INTO v_rule_id FROM seniority_rules
+    WHERE start_date <= CONCAT(p_salary_month, '-01')
+      AND (end_date IS NULL OR end_date >= CONCAT(p_salary_month, '-01'))
+    LIMIT 1;
+    RETURN v_rule_id;
+END//
+
+DELIMITER ;
+
+DELIMITER //
+--### 4. fn_pay_day()
+--从 sys_config 配置表读取发薪日，改值只需 UPDATE，无需重建函数或 EVENT
+DROP FUNCTION IF EXISTS fn_pay_day;
+CREATE FUNCTION fn_pay_day()
+RETURNS INT READS SQL DATA
+BEGIN
+    DECLARE v_day INT;
+    SELECT config_value INTO v_day FROM sys_config WHERE config_key = 'pay_day' LIMIT 1;
+    RETURN v_day;
+END //
+
+DELIMITER ;
+
+
+

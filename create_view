@@ -1,0 +1,145 @@
+--视图（8 个）
+DROP VIEW IF EXISTS v_active_employees;
+DROP VIEW IF EXISTS v_departments_info;
+DROP VIEW IF EXISTS v_payroll_company;
+DROP VIEW IF EXISTS v_payroll_dept_detail;
+DROP VIEW IF EXISTS v_payroll_personal;
+DROP VIEW IF EXISTS v_annual_category_ratio;
+DROP VIEW IF EXISTS v_dept_salary_stats;
+DROP VIEW IF EXISTS v_emp_annual_avg;
+-- 1. v_active_employees — 在职员工信息 ，员工信息视图直接输出部门名称。过滤 emp_status='在职'。
+CREATE VIEW v_active_employees AS
+SELECT
+    e.emp_id,           -- 员工ID
+    e.emp_name,         -- 员工姓名
+    d.dept_name,        -- 部门名称
+    t.title_name AS cur_title_name,    -- 当前职称名称
+    p.pos_name AS cur_position_name,   -- 当前岗位名称
+    e.entry_date        -- 入职日期
+FROM employees e
+LEFT JOIN departments d ON e.dept_id = d.dept_id
+LEFT JOIN titles      t ON e.cur_title_id = t.title_id
+LEFT JOIN positions   p ON e.cur_position_id = p.pos_id
+WHERE e.emp_status = '在职';
+
+--2. v_departments_info — 部门信息，部门信息视图直接输出部门经理姓名。含父部门名称、本部门在职员工列表
+CREATE VIEW v_departments_info AS
+SELECT
+    d.dept_id,          -- 部门ID
+    d.dept_name,        -- 部门名称
+    d.dept_level,       -- 部门级别（1级、2级、3级部门）
+    pd.dept_name AS parent_dept_name,  -- 上级部门名称
+    me.emp_name  AS manager_name,      -- 部门经理姓名
+    GROUP_CONCAT(e.emp_name ORDER BY e.emp_id SEPARATOR '、') AS emp_list,  -- 部门员工姓名列表
+    COUNT(e.emp_id) AS emp_count       -- 部门在职人数
+FROM departments d
+LEFT JOIN departments pd ON d.parent_dept_id = pd.dept_id
+LEFT JOIN employees   me ON d.manager_emp_id = me.emp_id
+LEFT JOIN employees    e ON e.dept_id = d.dept_id AND e.emp_status = '在职'
+GROUP BY d.dept_id, d.dept_name, d.dept_level, pd.dept_name, me.emp_name;
+
+--3. v_payroll_company — 财务视角全公司工资发放表，按员工、部门查询工资发放表。
+CREATE VIEW v_payroll_company AS
+SELECT
+    d.dept_name,        -- 部门名称
+    dm.emp_name AS manager_name,  -- 部门经理姓名
+    e.emp_name,         -- 员工姓名
+    ms.salary_month,    -- 工资月份（如 2025-03）
+    ms.total_income,    -- 应发工资（总税前收入）
+    ms.total_deduct,    -- 总扣除（社保、公积金、个税等）
+    ms.real_salary,     -- 实发工资
+    ms.pay_status       -- 发放状态（已发放 / 未发放）
+FROM monthly_salary_summary ms
+JOIN employees    e  ON ms.emp_id = e.emp_id
+LEFT JOIN departments d  ON e.dept_id = d.dept_id
+LEFT JOIN employees  dm ON d.manager_emp_id = dm.emp_id
+WHERE e.emp_status = '在职';
+
+--4. v_payroll_dept_detail — 经理视角部门工资明细（列式），经理可查看本部门全员，含各项工资类别分列。
+--这个视图里面只有各类工资的明细，没有工资汇总
+CREATE VIEW v_payroll_dept_detail AS
+SELECT
+    d.dept_id,      -- 部门ID
+    d.dept_name,    -- 部门名称
+    e.emp_id,       -- 员工ID
+    e.emp_name,     -- 员工姓名
+    msd.salary_month, -- 工资月份
+    SUM(IF(sc.cat_name='基本工资',     msd.amount, 0)) AS 基本工资,
+    SUM(IF(sc.cat_name='职称工资',     msd.amount, 0)) AS 职称工资,
+    SUM(IF(sc.cat_name='岗位工资',     msd.amount, 0)) AS 岗位工资,
+    SUM(IF(sc.cat_name='工龄工资',     msd.amount, 0)) AS 工龄工资,
+    SUM(IF(sc.cat_name='全勤奖励',     msd.amount, 0)) AS 全勤奖励,
+    SUM(IF(sc.cat_name='项目补贴',     msd.amount, 0)) AS 项目补贴,
+    SUM(IF(sc.cat_name='请假扣款',     msd.amount, 0)) AS 请假扣款,
+    SUM(IF(sc.cat_name='旷工扣款',     msd.amount, 0)) AS 旷工扣款,
+    SUM(IF(sc.cat_name='迟到早退扣款', msd.amount, 0)) AS 迟到早退扣款,
+    SUM(IF(sc.cat_name='个税扣除',     msd.amount, 0)) AS 个税扣除
+FROM monthly_salary_details msd
+JOIN salary_categories sc ON msd.cat_id = sc.cat_id
+JOIN employees          e ON msd.emp_id = e.emp_id
+JOIN departments        d ON e.dept_id = d.dept_id
+WHERE e.emp_status = '在职'
+GROUP BY d.dept_id, d.dept_name, e.emp_id, e.emp_name, msd.salary_month;
+
+--5.v_payroll_personal — 普通员工个人工资明细， 结构和 v_payroll_dept_detail 相同，由存储过程按 emp_id 过滤
+CREATE VIEW v_payroll_personal AS
+SELECT * FROM v_payroll_dept_detail;
+
+--6.v_annual_category_ratio — 年度工资类别合计及占比，按年度计算各工资类别的合计金额及占年度工资发放总额的比率。
+DROP VIEW IF EXISTS v_annual_category_ratio;
+CREATE VIEW v_annual_category_ratio AS
+SELECT
+    LEFT(msd.salary_month, 4) AS year,  -- 提取年份：2025-03 → 2025
+    sc.cat_name,                        -- 工资分类名称：基本工资、职称工资等
+    SUM(msd.amount) AS total_amount,    -- 该分类年度总金额
+    ROUND(
+        SUM(msd.amount) /
+        (SELECT SUM(amount) 
+         FROM monthly_salary_details inner_msd
+         WHERE LEFT(inner_msd.salary_month, 4) = year -- 直接用外层提取好的year，不再写msd.salary_month
+           AND inner_msd.amount > 0)
+        * 100, 2
+    ) AS ratio_pct
+FROM monthly_salary_details msd
+JOIN salary_categories sc ON msd.cat_id = sc.cat_id
+GROUP BY LEFT(msd.salary_month, 4), sc.cat_name;
+
+--7. v_dept_salary_stats — 部门月度/年度最高最低平均工资，按部门统计每月和每年的最高工资、最低工资和平均工资。
+CREATE VIEW v_dept_salary_stats AS
+SELECT
+    d.dept_name,          -- 部门名称
+    LEFT(ms.salary_month, 4) AS year,  -- 提取年份（2025-03 → 2025）
+    ms.salary_month,      -- 具体月份（2025-03）
+    MAX(ms.real_salary)  AS max_salary,   -- 该部门当月最高工资
+    MIN(ms.real_salary)  AS min_salary,   -- 该部门当月最低工资
+    ROUND(AVG(ms.real_salary), 2) AS avg_salary  -- 该部门当月平均工资（保留2位小数）
+FROM monthly_salary_summary ms
+JOIN employees     e ON ms.emp_id = e.emp_id
+JOIN departments   d ON e.dept_id = d.dept_id
+WHERE e.emp_status = '在职'
+GROUP BY d.dept_name, LEFT(ms.salary_month, 4), ms.salary_month;
+
+--8. v_emp_annual_avg — 员工年度平均工资
+CREATE VIEW v_emp_annual_avg AS
+SELECT
+    e.emp_id,         -- 员工ID
+    e.emp_name,       -- 员工姓名
+    d.dept_name,      -- 部门名称
+    LEFT(ms.salary_month, 4) AS year,  -- 提取年份（2025-02 → 2025）
+    ROUND(AVG(ms.real_salary), 2) AS annual_avg_salary  -- 年度月均工资
+FROM monthly_salary_summary ms
+JOIN employees     e ON ms.emp_id = e.emp_id
+LEFT JOIN departments d ON e.dept_id = d.dept_id
+WHERE e.emp_status = '在职'
+GROUP BY e.emp_id, e.emp_name, d.dept_name, LEFT(ms.salary_month, 4);
+
+
+
+
+
+
+
+
+
+
+
