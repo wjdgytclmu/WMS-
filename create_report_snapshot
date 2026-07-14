@@ -1,0 +1,103 @@
+-- ============================================================================
+-- 报表快照系统 — 基础功能实现后的再优化
+-- 用途：定时抓取报表数据并存为 JSON 快照，支持历史趋势对比
+-- 依赖：基础 15 表 + 8 视图已建好
+-- ============================================================================
+
+USE WMS;
+
+-- ① 报表快照表
+DROP TABLE IF EXISTS report_snapshots;
+CREATE TABLE report_snapshots (
+    snap_id       INT AUTO_INCREMENT PRIMARY KEY,
+    report_type   VARCHAR(30)  NOT NULL COMMENT 'dept_monthly|emp_annual|category_ratio|company_summary',
+    report_period CHAR(7)      NOT NULL COMMENT '报表期间 YYYY-MM 或 YYYY',
+    dept_id       INT          DEFAULT NULL COMMENT '部门ID（部门报表时使用）',
+    snap_data     JSON         NOT NULL COMMENT '报表数据快照',
+    created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP COMMENT '抓取时间',
+    UNIQUE KEY uk_report (report_type, report_period, dept_id),
+    INDEX idx_type_period (report_type, report_period)
+) COMMENT '报表快照表';
+
+-- ② 抓取存储过程
+DELIMITER //
+
+DROP PROCEDURE IF EXISTS sp_snapshot_report//
+
+CREATE PROCEDURE sp_snapshot_report(IN p_period CHAR(7))
+BEGIN
+    DECLARE v_year CHAR(4) DEFAULT LEFT(p_period, 4);
+
+    START TRANSACTION;
+
+    -- 全公司月度汇总
+    INSERT INTO report_snapshots(report_type, report_period, dept_id, snap_data)
+    SELECT 'company_summary', p_period, NULL,
+           JSON_OBJECT(
+               'employee_count', COUNT(*),
+               'total_income',   SUM(total_income),
+               'total_deduct',   SUM(total_deduct),
+               'total_real',     SUM(real_salary),
+               'avg_salary',     ROUND(AVG(real_salary), 2),
+               'max_salary',     MAX(real_salary),
+               'min_salary',     MIN(real_salary)
+           )
+    FROM monthly_salary_summary ms
+    JOIN employees e ON ms.emp_id = e.emp_id
+    WHERE ms.salary_month = p_period AND e.emp_status = '在职'
+    ON DUPLICATE KEY UPDATE snap_data = VALUES(snap_data);
+
+    -- 部门月度统计
+    INSERT INTO report_snapshots(report_type, report_period, dept_id, snap_data)
+    SELECT 'dept_monthly', p_period, d.dept_id,
+           JSON_OBJECT(
+               'dept_name',  d.dept_name,
+               'emp_count',  COUNT(*),
+               'avg_salary', ROUND(AVG(ms.real_salary), 2),
+               'max_salary', MAX(ms.real_salary),
+               'min_salary', MIN(ms.real_salary),
+               'total_pay',  SUM(ms.real_salary)
+           )
+    FROM monthly_salary_summary ms
+    JOIN employees e   ON ms.emp_id = e.emp_id
+    JOIN departments d ON e.dept_id = d.dept_id
+    WHERE ms.salary_month = p_period AND e.emp_status = '在职'
+    GROUP BY d.dept_id, d.dept_name
+    ON DUPLICATE KEY UPDATE snap_data = VALUES(snap_data);
+
+    -- 年度工资类别占比
+    INSERT INTO report_snapshots(report_type, report_period, dept_id, snap_data)
+    SELECT 'category_ratio', v_year, NULL,
+           JSON_OBJECTAGG(cat_name, JSON_OBJECT('amount', total_amount, 'ratio_pct', ratio_pct))
+    FROM v_annual_category_ratio
+    WHERE year = v_year
+    ON DUPLICATE KEY UPDATE snap_data = VALUES(snap_data);
+
+    -- 员工年度平均工资
+    INSERT INTO report_snapshots(report_type, report_period, dept_id, snap_data)
+    SELECT 'emp_annual', v_year, NULL,
+           JSON_OBJECTAGG(emp_id, JSON_OBJECT('name', emp_name, 'dept', dept_name, 'avg', annual_avg_salary))
+    FROM v_emp_annual_avg
+    WHERE year = v_year
+    ON DUPLICATE KEY UPDATE snap_data = VALUES(snap_data);
+
+    COMMIT;
+END//
+
+DELIMITER ;
+
+-- ③ 快照查询辅助视图
+DROP VIEW IF EXISTS v_report_history;
+CREATE VIEW v_report_history AS
+SELECT
+    report_type,
+    report_period,
+    dept_id,
+    created_at,
+    snap_data
+FROM report_snapshots
+ORDER BY report_type, report_period DESC;
+
+-- ④ 新增至每日定时任务（追加到 evt_check_pay_day 的 DO 块末尾）
+-- 手动执行时：
+-- CALL sp_snapshot_report('2026-07');
