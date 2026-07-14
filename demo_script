@@ -286,6 +286,35 @@ GROUP BY ss.salary_month, sr.rule_name;
 
 
 -- ============================================================================
+-- 报表快照系统（基础功能再优化）
+-- 说明：将当月 4 类报表数据抓取为 JSON 快照，支持历史趋势对比
+--       每次 sp_snapshot_report 覆盖式更新，可重复执行
+-- ============================================================================
+SELECT '--- 报表快照系统 ---' AS '';
+
+-- 抓取 2026-07 全部报表快照（全公司汇总 + 部门月度 + 年度占比 + 员工年均）
+CALL sp_snapshot_report('2026-07');
+
+-- 查看快照历史
+SELECT report_type, report_period, created_at FROM v_report_history;
+
+-- 全公司月度趋势：对比各月平均工资和实发总额
+SELECT report_period AS 月份,
+       snap_data->>'$.avg_salary' AS 平均工资,
+       snap_data->>'$.total_real' AS 实发总额
+FROM report_snapshots WHERE report_type = 'company_summary'
+ORDER BY report_period DESC;
+
+-- 部门对比：本月 vs 上月平均工资
+SELECT a.snap_data->>'$.dept_name' AS 部门,
+       a.snap_data->>'$.avg_salary' AS 本月,
+       b.snap_data->>'$.avg_salary' AS 上月
+FROM report_snapshots a
+LEFT JOIN report_snapshots b ON a.dept_id = b.dept_id AND b.report_period = '2026-06'
+WHERE a.report_type = 'dept_monthly' AND a.report_period = '2026-07';
+
+
+-- ============================================================================
 -- 发放日锁定验证
 -- 要求：工资发放日之后不能修改发放日之前的工资（但允许 INSERT 冲销）
 -- ============================================================================

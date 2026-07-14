@@ -192,14 +192,15 @@ BEGIN
     SELECT COUNT(*) INTO v_pos_count   FROM positions;
 
     -- ========== 事务保护：中途失败自动回滚，不留脏数据 ==========
+    START TRANSACTION;
+
     DELETE FROM monthly_salary_summary WHERE salary_month = v_salary_month;
     DELETE FROM monthly_salary_details WHERE salary_month = v_salary_month;
     DELETE FROM attendance_records WHERE att_date BETWEEN '2026-07-01' AND '2026-07-31';
     DELETE FROM emp_position_history;
     DELETE FROM emp_title_history;
     DELETE FROM employees;
-    START TRANSACTION;
-
+    
     -- ========== 主循环 ==========
     WHILE i <= target_count DO
 
