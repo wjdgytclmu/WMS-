@@ -186,8 +186,6 @@ BEGIN
            '在职'
     FROM seq;
 
-    SET v_total_emp = target_count;
-
     -- ====== ② 批量插入 7 月考勤（31 × N 行，一次 INSERT） ======
     INSERT INTO attendance_records(emp_id, att_type, att_date)
     SELECT e.emp_id,
@@ -251,7 +249,6 @@ BEGIN
            (SELECT title_id FROM titles WHERE title_id != e.cur_title_id ORDER BY RAND() LIMIT 1),
            e.cur_title_id,
            DATE_ADD(e.entry_date, INTERVAL FLOOR(RAND() * DATEDIFF('2026-07-01', e.entry_date) * 0.7) DAY)
-    FROM employees e
     FROM employees e;
 
     INSERT INTO emp_position_history(emp_id, old_pos_id, new_pos_id, change_time)
