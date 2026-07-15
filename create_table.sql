@@ -318,4 +318,17 @@ CREATE TABLE sys_config (
 
 -- 种子数据：发薪日
 --INSERT INTO sys_config VALUES ('pay_day', '10');
-EXPLAIN SELECT * FROM departments WHERE parent_dept_id = 1;
+
+-- 16 报表快照表
+DROP TABLE IF EXISTS report_snapshots;
+CREATE TABLE report_snapshots (
+    snap_id       INT AUTO_INCREMENT PRIMARY KEY,
+    report_type   VARCHAR(30)  NOT NULL COMMENT 'dept_monthly|emp_annual|category_ratio|company_summary',
+    report_period CHAR(7)      NOT NULL COMMENT '报表期间 YYYY-MM 或 YYYY',
+    dept_id       INT          DEFAULT NULL COMMENT '部门ID（部门报表时使用）',
+    snap_data     JSON         NOT NULL COMMENT '报表数据快照',
+    created_at    DATETIME     DEFAULT CURRENT_TIMESTAMP COMMENT '抓取时间',
+    UNIQUE KEY uk_report (report_type, report_period, dept_id),
+    INDEX idx_type_period (report_type, report_period)
+) COMMENT '报表快照表';
+
