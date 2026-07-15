@@ -32,18 +32,18 @@ CALL sp_calculate_seniority_salary('2026-07');
 --       计算规则：请假 100/天 | 迟到早退 50/次 | 旷工 300/天 | 满勤奖 300
 -- ############################################################################
 
--- 2.1 员工 5：新增 1 天请假 → 触发器自动：请假扣款 +100，全勤奖励归 0
-INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (5, '请假', '2026-07-03');
+-- 2.1 员工 88：新增 1 天请假 → 触发器自动：请假扣款 +100，全勤奖励归 0
+INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (88, '请假', '2026-07-03');
 
--- 2.2 员工 10：新增 1 天旷工 → 触发器自动：旷工扣款 +300
-INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (10, '旷工', '2026-07-05');
+-- 2.2 员工 89：新增 1 天旷工 → 触发器自动：旷工扣款 +300
+INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (89, '旷工', '2026-07-05');
 
 -- 2.3 查询月度工资明细，验证触发器是否正确更新了扣款和全勤奖励
 SELECT e.emp_name, sc.cat_name, msd.amount
 FROM monthly_salary_details msd
 JOIN employees e ON msd.emp_id = e.emp_id
 JOIN salary_categories sc ON msd.cat_id = sc.cat_id
-WHERE msd.emp_id IN (5, 10) AND msd.salary_month = '2026-07'
+WHERE msd.emp_id IN (88, 89) AND msd.salary_month = '2026-07'
   AND sc.cat_name IN ('请假扣款','旷工扣款','全勤奖励');
 
 
@@ -88,9 +88,9 @@ SELECT * FROM v_active_employees LIMIT 10;
 -- 部门信息视图：含父部门名称、经理姓名、本部门在职员工列表
 SELECT * FROM v_departments_info;
 
--- 逻辑删除：将员工 3 状态改为"离职"，数据保留但视图中不可见
-CALL sp_delete_employee(3);
-SELECT emp_id, emp_name, emp_status FROM employees WHERE emp_id = 3;
+-- 逻辑删除：将员工 4 状态改为"离职"，数据保留但视图中不可见
+CALL sp_delete_employee(4);
+SELECT emp_id, emp_name, emp_status FROM employees WHERE emp_id = 4;
 SELECT COUNT(*) AS 在职人数 FROM v_active_employees;
 
 
@@ -132,17 +132,17 @@ LIMIT 10;
 -- ============================================================================
 SELECT '--- 题目 (6) 触发器实时更新缺勤扣款 ---' AS '';
 
--- 查看员工 8 当前的请假扣款和全勤奖励（修改前）
+-- 查看员工 11 当前的请假扣款和全勤奖励（修改前）
 SELECT emp_id, cat_id, amount FROM monthly_salary_details
-WHERE emp_id = 8 AND salary_month = '2026-07'
+WHERE emp_id = 11 AND salary_month = '2026-07'
   AND cat_id IN (SELECT cat_id FROM salary_categories WHERE cat_name IN ('请假扣款','全勤奖励'));
 
--- 给员工 8 新增一条请假记录 → 触发器立即重新计算并更新明细
-INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (8, '请假', '2026-07-10');
+-- 给员工 11 新增一条请假记录 → 触发器立即重新计算并更新明细
+INSERT INTO attendance_records(emp_id, att_type, att_date) VALUES (11, '请假', '2026-07-10');
 
 -- 再次查看（修改后）：请假扣款应增加 100，全勤奖励应为 0
 SELECT emp_id, cat_id, amount FROM monthly_salary_details
-WHERE emp_id = 8 AND salary_month = '2026-07'
+WHERE emp_id = 11 AND salary_month = '2026-07'
   AND cat_id IN (SELECT cat_id FROM salary_categories WHERE cat_name IN ('请假扣款','全勤奖励'));
 
 
@@ -259,10 +259,10 @@ JOIN positions p ON e.cur_position_id = p.pos_id
 WHERE d.manager_emp_id = e.emp_id LIMIT 1;
 
 -- 经理查工资：第一行标记"本人"，后续为"部门成员"（用实际查出的 emp_id 替换）
-CALL sp_query_my_salary(385, '2026-07');
+CALL sp_query_my_salary(178, '2026-07');
 
 -- 普通员工查工资：仅返回自己一条，标记"个人"
-CALL sp_query_my_salary(50, '2026-07');
+CALL sp_query_my_salary(5, '2026-07');
 
 
 -- ============================================================================

@@ -167,7 +167,8 @@ BEGIN
         UNION ALL
         (SELECT '部门成员' AS tag, d.* FROM v_payroll_dept_detail d
          WHERE d.dept_id = v_dept_id AND d.emp_id != p_emp_id
-           AND d.salary_month = p_salary_month ORDER BY d.emp_id);
+           AND d.salary_month = p_salary_month)
+        ORDER BY CASE tag WHEN '本人' THEN 0 ELSE 1 END, emp_id;
     ELSE
         SELECT '个人' AS tag, d.* FROM v_payroll_personal d
         WHERE d.emp_id = p_emp_id AND d.salary_month = p_salary_month;

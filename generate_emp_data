@@ -316,9 +316,12 @@ DROP TRIGGER IF EXISTS trg_attendance_after_delete;
 SET cte_max_recursion_depth = 100000;
 CALL generate_emp_data(10000);
 SET cte_max_recursion_depth = 1000;
--- 10% 员工随机设为离职（模拟历史离职数据）
+-- 10% 员工随机设为离职（排除经理，模拟历史离职数据）
 UPDATE employees SET emp_status = '离职'
-WHERE emp_id IN (
+WHERE emp_id NOT IN (
+    SELECT manager_emp_id FROM departments WHERE manager_emp_id IS NOT NULL
+)
+AND emp_id IN (
     SELECT emp_id FROM (SELECT emp_id FROM employees ORDER BY RAND() LIMIT 1000) t
 );
 
