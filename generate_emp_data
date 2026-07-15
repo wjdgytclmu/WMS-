@@ -159,7 +159,6 @@ CREATE PROCEDURE generate_emp_data(IN target_count INT)
 BEGIN
     DECLARE v_salary_month CHAR(7) DEFAULT '2026-07';
     DECLARE v_subsidy_cat INT;  DECLARE v_tax_cat INT;  DECLARE v_seniority_cat INT;
-    DECLARE v_total_emp INT DEFAULT 0;
 
     SELECT cat_id INTO v_subsidy_cat   FROM salary_categories WHERE cat_name = '项目补贴';
     SELECT cat_id INTO v_tax_cat       FROM salary_categories WHERE cat_name = '个税扣除';
@@ -206,36 +205,25 @@ BEGIN
               UNION SELECT 25 UNION SELECT 26 UNION SELECT 27 UNION SELECT 28 UNION SELECT 29
               UNION SELECT 30) t
     ) d
-    CROSS JOIN (SELECT FLOOR(RAND() * 100) AS r) rd
-    WHERE e.emp_id BETWEEN
-        (SELECT MIN(emp_id) FROM employees) AND
-        (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1;
+    CROSS JOIN (SELECT FLOOR(RAND() * 100) AS r) rd;
 
-    -- ====== ③ 批量插入职称/岗位工资明细 ======
+    -- ====== ③ 批量插入职称/岗位工资明细（表已清空，全量插入无需 WHERE） ======
     INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
     SELECT e.emp_id, v_salary_month, ts.cat_id, ts.salary_amount
-    FROM employees e JOIN title_salary ts ON e.cur_title_id = ts.title_id
-    WHERE e.emp_id BETWEEN (SELECT MIN(emp_id) FROM employees)
-        AND (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1;
+    FROM employees e JOIN title_salary ts ON e.cur_title_id = ts.title_id;
 
     INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
     SELECT e.emp_id, v_salary_month, ps.cat_id, ps.salary_amount
-    FROM employees e JOIN position_salary ps ON e.cur_position_id = ps.pos_id
-    WHERE e.emp_id BETWEEN (SELECT MIN(emp_id) FROM employees)
-        AND (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1;
+    FROM employees e JOIN position_salary ps ON e.cur_position_id = ps.pos_id;
 
     -- ====== ④ 批量插入手动录入项 + 工龄工资 ======
     INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
     SELECT e.emp_id, v_salary_month, v_subsidy_cat, FLOOR(RAND() * 2500) + 500
-    FROM employees e WHERE e.emp_id BETWEEN
-        (SELECT MIN(emp_id) FROM employees) AND
-        (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1;
+    FROM employees e;
 
     INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
     SELECT e.emp_id, v_salary_month, v_tax_cat, -FLOOR(RAND() * 700) - 300
-    FROM employees e WHERE e.emp_id BETWEEN
-        (SELECT MIN(emp_id) FROM employees) AND
-        (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1;
+    FROM employees e;
 
     INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
     SELECT e.emp_id, v_salary_month, v_seniority_cat,
@@ -243,9 +231,7 @@ BEGIN
     FROM employees e
     CROSS JOIN seniority_rules sr
     WHERE sr.start_date <= CONCAT(v_salary_month, '-01')
-      AND (sr.end_date IS NULL OR sr.end_date >= CONCAT(v_salary_month, '-01'))
-      AND e.emp_id BETWEEN (SELECT MIN(emp_id) FROM employees)
-        AND (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1;
+      AND (sr.end_date IS NULL OR sr.end_date >= CONCAT(v_salary_month, '-01'));
 
     -- ====== ⑤ 批量汇总 → 月度工资总表 ======
     INSERT INTO monthly_salary_summary(emp_id, salary_month, total_income, total_deduct, real_salary, pay_status)
@@ -266,17 +252,14 @@ BEGIN
            e.cur_title_id,
            DATE_ADD(e.entry_date, INTERVAL FLOOR(RAND() * DATEDIFF('2026-07-01', e.entry_date) * 0.7) DAY)
     FROM employees e
-    WHERE e.emp_id BETWEEN (SELECT MIN(emp_id) FROM employees)
-        AND (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1;
+    FROM employees e;
 
     INSERT INTO emp_position_history(emp_id, old_pos_id, new_pos_id, change_time)
     SELECT e.emp_id,
            (SELECT pos_id FROM positions WHERE pos_id != e.cur_position_id ORDER BY RAND() LIMIT 1),
            e.cur_position_id,
            DATE_ADD(e.entry_date, INTERVAL FLOOR(RAND() * DATEDIFF('2026-07-01', e.entry_date) * 0.5) DAY)
-    FROM employees e
-    WHERE e.emp_id BETWEEN (SELECT MIN(emp_id) FROM employees)
-        AND (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1;
+    FROM employees e;
 
     -- ====== ⑦ 部门经理提拔 ======
     UPDATE employees e
@@ -309,8 +292,6 @@ BEGIN
     LEFT JOIN attendance_records a ON e.emp_id = a.emp_id
         AND a.att_date BETWEEN '2026-07-01' AND '2026-07-31'
         AND a.att_type IN ('请假','旷工','迟到早退')
-    WHERE e.emp_id BETWEEN (SELECT MIN(emp_id) FROM employees)
-        AND (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1
     GROUP BY e.emp_id, vfc.cat_id;
 
     INSERT INTO monthly_salary_details(emp_id, salary_month, cat_id, amount)
@@ -323,8 +304,6 @@ BEGIN
         AND a.att_type = CASE sc.cat_name WHEN '请假扣款' THEN '请假'
                                           WHEN '旷工扣款' THEN '旷工'
                                           WHEN '迟到早退扣款' THEN '迟到早退' END
-    WHERE e.emp_id BETWEEN (SELECT MIN(emp_id) FROM employees)
-        AND (SELECT MIN(emp_id) FROM employees) + v_total_emp - 1
     GROUP BY e.emp_id, sc.cat_id;
 
     COMMIT;
@@ -337,8 +316,9 @@ DROP TRIGGER IF EXISTS trg_attendance_after_insert;
 DROP TRIGGER IF EXISTS trg_attendance_after_update;
 DROP TRIGGER IF EXISTS trg_attendance_after_delete;
 
+SET cte_max_recursion_depth = 100000;
 CALL generate_emp_data(10000);
-
+SET cte_max_recursion_depth = 1000;
 -- 10% 员工随机设为离职（模拟历史离职数据）
 UPDATE employees SET emp_status = '离职'
 WHERE emp_id IN (
